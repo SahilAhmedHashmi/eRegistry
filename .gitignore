@@ -1,0 +1,83 @@
+# Python virtual environments
+.venv/
+venv/
+env/
+
+# Python caches and compiled files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Testing and code-quality caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# Build and packaging output
+build/
+dist/
+release/
+releases/
+*.spec.bak
+
+# Local application data
+eRegistry-Data/
+organisations/
+backups/
+reports/
+auth.json
+bootstrap.json
+organisations.json
+settings.ini
+
+# Encrypted databases and database support files
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+
+# Generated exports and sensitive operational files
+*.eregbackup
+*.xlsx
+*.xls
+*.csv
+*.pdf
+
+# Generated distribution archives
+*.zip
+*.7z
+
+# Environment variables, secrets and keys
+.env
+.env.*
+*.key
+*.pem
+*.pfx
+*.p12
+
+# Logs and temporary files
+*.log
+*.tmp
+*.temp
+~$*
+tmp/
+temp/
+
+# IDE settings
+.vscode/
+.idea/
+
+# Operating-system files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# PyInstaller and Inno Setup temporary output
+*.toc
+*.pkg
+warn-*.txt
+xref-*.html
