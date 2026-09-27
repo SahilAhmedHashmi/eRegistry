@@ -50,6 +50,7 @@ from ..services.import_service import ExcelImportService, TARGET_FIELDS
 from ..services.report_service import AnalyticsReportService
 from .dialogs import OrganisationDialog
 from .employee_wizard import EmployeeWizard
+from .table_utils import configure_resizable_columns
 
 
 def money(value) -> str:
@@ -151,7 +152,7 @@ class RateCardsDialog(QDialog):
         self.table.setHorizontalHeaderLabels(
             ["Category / Designation", "Daily Wage", "Client Billing Rate"]
         )
-        self.table.horizontalHeader().setStretchLastSection(True)
+        configure_resizable_columns(self.table)
         layout.addWidget(self.table)
         with context.db.session() as session:
             cards = list(session.query(RateCard).order_by(RateCard.designation))
@@ -307,7 +308,7 @@ class ImportDialog(QDialog):
         )
         self.mapping = QTableWidget(len(TARGET_FIELDS), 2)
         self.mapping.setHorizontalHeaderLabels(["eRegistry field", "Excel column"])
-        self.mapping.horizontalHeader().setStretchLastSection(True)
+        configure_resizable_columns(self.mapping)
         for r, label in enumerate(TARGET_FIELDS):
             self.mapping.setItem(r, 0, item(label))
             self.mapping.setCellWidget(r, 1, QComboBox())
@@ -516,10 +517,23 @@ class MainWindow(QMainWindow):
             ["ID", "Reg No.", "Name", "Designation", "Status", "Mobile", "Aadhaar", "UAN", "ESIC"]
         )
         self.employee_table.setColumnHidden(0, True)
+        configure_resizable_columns(
+            self.employee_table,
+            [
+                0,    # Hidden employee ID
+                130,  # Registration number
+                240,  # Name
+                170,  # Designation
+                100,  # Status
+                140,  # Mobile
+                170,  # Aadhaar
+                160,  # UAN
+                150,  # ESIC
+            ],
+        )
         self.employee_table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.employee_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.employee_table.doubleClicked.connect(self._edit_employee)
-        self.employee_table.horizontalHeader().setStretchLastSection(True)
         layout.addWidget(self.employee_table)
         self.tabs.addTab(page, "Employees")
 
@@ -541,8 +555,22 @@ class MainWindow(QMainWindow):
             if self.context.organisation
             else None
         )
+        self.payroll_add_employee = QPushButton("Add employee to month")
+        self.payroll_add_employee.clicked.connect(
+            self._add_employee_to_payroll
+        )
+        self.payroll_add_employee.setEnabled(False)
+
+        self.payroll_remove_employee = QPushButton("Remove from month")
+        self.payroll_remove_employee.clicked.connect(
+            self._remove_employee_from_payroll
+        )
+        self.payroll_remove_employee.setEnabled(False)
+
         tools.addWidget(self.payroll_month)
         tools.addWidget(create)
+        tools.addWidget(self.payroll_add_employee)
+        tools.addWidget(self.payroll_remove_employee)
         tools.addWidget(save)
         tools.addWidget(self.payroll_lock)
         tools.addWidget(rates)
@@ -550,7 +578,7 @@ class MainWindow(QMainWindow):
         layout.addLayout(tools)
         headers = [
             "Entry ID",
-            "Include",
+
             "Employee",
             "Working Days",
             "OT Hours",
@@ -569,10 +597,15 @@ class MainWindow(QMainWindow):
             "Revenue",
             "Rating 1–5",
             "Performance Notes",
+            "Registration No.",
         ]
         self.payroll_table = QTableWidget(0, len(headers))
         self.payroll_table.setHorizontalHeaderLabels(headers)
         self.payroll_table.setColumnHidden(0, True)
+        # Display Registration No. after Employee.
+        # It remains logical column 19.
+        self.payroll_table.horizontalHeader().moveSection(19, 2)
+        configure_resizable_columns(self.payroll_table)
         self.payroll_table.setSelectionBehavior(QAbstractItemView.SelectRows)
         layout.addWidget(self.payroll_table)
         meta = QHBoxLayout()
@@ -631,11 +664,12 @@ class MainWindow(QMainWindow):
         )
         self.analytics_note.setWordWrap(True)
         layout.addWidget(self.analytics_note)
-        self.redeploy_table = QTableWidget(0, 10)
+        self.redeploy_table = QTableWidget(0, 11)
         self.redeploy_table.setHorizontalHeaderLabels(
             [
                 "Rank",
                 "Employee",
+                "Registration No.",
                 "Category",
                 "Score",
                 "Performance",
@@ -646,7 +680,7 @@ class MainWindow(QMainWindow):
                 "Flags",
             ]
         )
-        self.redeploy_table.horizontalHeader().setStretchLastSection(True)
+        configure_resizable_columns(self.redeploy_table)
         layout.addWidget(self.redeploy_table)
         self.tabs.addTab(page, "Analytics & Redeployment")
 
@@ -738,7 +772,6 @@ class MainWindow(QMainWindow):
                 )
             ):
                 self.employee_table.setItem(r, c, item(value))
-        self.employee_table.resizeColumnsToContents()
 
     def _selected_employee(self):
         row = self.employee_table.currentRow()
@@ -975,18 +1008,39 @@ class MainWindow(QMainWindow):
 
     def _load_payroll(self, index):
         self.payroll_table.setRowCount(0)
-        self.current_payroll_id = self.payroll_month.itemData(index) if index >= 0 else None
+        self.payroll_add_employee.setEnabled(False)
+        self.payroll_remove_employee.setEnabled(False)
+
+        self.current_payroll_id = (
+            self.payroll_month.itemData(index)
+            if index >= 0
+            else None
+        )
         if not self.current_payroll_id:
             return
-        month = self.context.payroll.get_month(self.current_payroll_id)
+
+        month = self.context.payroll.get_month(
+            self.current_payroll_id
+        )
         editable = month.status != "Completed"
-        self.payroll_lock.setText("Complete and lock" if editable else "Reopen for editing")
+
+        self.payroll_lock.setText(
+            "Complete and lock"
+            if editable
+            else "Reopen for editing"
+        )
+        self.payroll_add_employee.setEnabled(editable)
+        self.payroll_remove_employee.setEnabled(editable)
+
         for entry in month.entries:
-            r = self.payroll_table.rowCount()
-            self.payroll_table.insertRow(r)
+            if not entry.included:
+                continue
+
+            row = self.payroll_table.rowCount()
+            self.payroll_table.insertRow(row)
+
             values = [
                 entry.id,
-                entry.included,
                 entry.employee.name,
                 entry.working_days,
                 entry.ot_hours,
@@ -1005,99 +1059,371 @@ class MainWindow(QMainWindow):
                 entry.billed_revenue,
                 entry.performance_rating or "",
                 entry.performance_notes,
+                entry.employee.registration_number or "",
             ]
-            self.payroll_table.setItem(r, 0, item(entry.id))
-            check = QTableWidgetItem()
-            check.setFlags(Qt.ItemIsEnabled | Qt.ItemIsUserCheckable)
-            check.setCheckState(Qt.Checked if entry.included else Qt.Unchecked)
-            self.payroll_table.setItem(r, 1, check)
-            for c in range(2, len(values)):
-                self.payroll_table.setItem(r, c, item(values[c], editable and c not in {2, 17}))
+
+            self.payroll_table.setItem(
+                row,
+                0,
+                item(entry.id),
+            )
+
+            for column in range(1, len(values)):
+                self.payroll_table.setItem(
+                    row,
+                    column,
+                    item(
+                        values[column],
+                        editable and column not in {1, 16},
+                    ),
+                )
+
+        # Registration numbers identify linked employee records.
+        # They cannot be edited from the monthly salary table.
+        for salary_row in range(
+            self.payroll_table.rowCount()
+        ):
+            registration_item = self.payroll_table.item(
+                salary_row,
+                19,
+            )
+            if registration_item is not None:
+                registration_item.setFlags(
+                    registration_item.flags()
+                    & ~Qt.ItemIsEditable
+                )
+
         self.payroll_table.setEditTriggers(
-            QAbstractItemView.DoubleClicked | QAbstractItemView.EditKeyPressed
+            (
+                QAbstractItemView.DoubleClicked
+                | QAbstractItemView.EditKeyPressed
+            )
             if editable
             else QAbstractItemView.NoEditTriggers
         )
-        self.client_rating.setValue(month.client_satisfaction_rating or 0)
-        self.client_notes.setText(month.client_satisfaction_notes or "")
+
+        self.client_rating.setValue(
+            month.client_satisfaction_rating or 0
+        )
+        self.client_notes.setText(
+            month.client_satisfaction_notes or ""
+        )
         self.employer_cost.setValue(month.employer_costs)
         self.statutory_cost.setValue(month.statutory_costs)
-        self.operational_cost.setValue(month.operational_costs)
+        self.operational_cost.setValue(
+            month.operational_costs
+        )
 
-    def _save_payroll(self):
+    def _add_employee_to_payroll(self):
         if not self.current_payroll_id:
-            return
-        month = self.context.payroll.get_month(self.current_payroll_id)
-        if month.status == "Completed":
-            QMessageBox.warning(self, "Month locked", "Reopen this month before editing.")
-            return
-        calculated_columns = {
-            7: "working_day_wages",
-            10: "gross_salary",
-            14: "total_deduction",
-            15: "net_salary",
-        }
-        override_needed = False
-        prepared = []
-        fields = {
-            3: "working_days",
-            4: "ot_hours",
-            5: "ph_days",
-            6: "wages_per_day",
-            7: "working_day_wages",
-            8: "ot_ph_wages",
-            9: "bonus",
-            10: "gross_salary",
-            11: "epf_deduction",
-            12: "esic_deduction",
-            13: "advance",
-            14: "total_deduction",
-            15: "net_salary",
-            16: "client_billing_rate",
-            18: "performance_rating",
-            19: "performance_notes",
-        }
-        try:
-            for r in range(self.payroll_table.rowCount()):
-                values = {"included": self.payroll_table.item(r, 1).checkState() == Qt.Checked}
-                overrides = set()
-                for c, field in fields.items():
-                    raw = self.payroll_table.item(r, c).text().strip()
-                    if field == "performance_notes":
-                        values[field] = raw
-                    elif field == "performance_rating":
-                        values[field] = int(raw) if raw else None
-                    else:
-                        values[field] = float(raw.replace(",", "") or 0)
-                base = {**values}
-                from ..services.payroll_service import calculate_entry
-
-                automatic = calculate_entry(base)
-                for c, field in calculated_columns.items():
-                    if abs(values[field] - automatic[field]) > 0.001:
-                        overrides.add(field)
-                        override_needed = True
-                prepared.append((int(self.payroll_table.item(r, 0).text()), values, overrides))
-        except ValueError as exc:
-            QMessageBox.warning(
-                self, "Invalid salary value", f"Use numbers in salary fields. {exc}"
+            QMessageBox.information(
+                self,
+                "No salary month",
+                "Create or select a salary month first.",
             )
             return
-        if (
-            override_needed
-            and QMessageBox.question(
+
+        if not self._save_payroll_data(
+            show_message=False
+        ):
+            return
+
+        try:
+            employees = (
+                self.context.payroll.available_employees(
+                    self.current_payroll_id
+                )
+            )
+        except Exception as exc:
+            QMessageBox.critical(
                 self,
-                "Confirm salary override",
-                "One or more calculated values were changed manually. Save and record these overrides in the activity log?",
+                "Cannot load employees",
+                str(exc),
+            )
+            return
+
+        if not employees:
+            QMessageBox.information(
+                self,
+                "No employees available",
+                (
+                    "Every registered employee is already "
+                    "included in this salary month."
+                ),
+            )
+            return
+
+        labels = [
+            (
+                f"{employee.name} - {employee.status} "
+                f"- Employee ID {employee.id}"
+            )
+            for employee in employees
+        ]
+
+        selected, ok = QInputDialog.getItem(
+            self,
+            "Add employee to month",
+            "Employee",
+            labels,
+            0,
+            False,
+        )
+        if not ok:
+            return
+
+        employee = employees[labels.index(selected)]
+
+        try:
+            self.context.payroll.include_employee(
+                self.current_payroll_id,
+                employee.id,
+            )
+            self._sync_excel(silent=True)
+        except Exception as exc:
+            QMessageBox.critical(
+                self,
+                "Employee could not be added",
+                str(exc),
+            )
+            return
+
+        self._load_payroll(
+            self.payroll_month.currentIndex()
+        )
+        self._refresh_dashboard()
+
+        QMessageBox.information(
+            self,
+            "Employee added",
+            (
+                f"{employee.name} was added to this "
+                "salary month."
+            ),
+        )
+
+    def _remove_employee_from_payroll(self):
+        if not self.current_payroll_id:
+            QMessageBox.information(
+                self,
+                "No salary month",
+                "Create or select a salary month first.",
+            )
+            return
+
+        row = self.payroll_table.currentRow()
+        if row < 0:
+            QMessageBox.information(
+                self,
+                "Select an employee",
+                (
+                    "Select the employee row that should be "
+                    "removed from this salary month."
+                ),
+            )
+            return
+
+        entry_item = self.payroll_table.item(row, 0)
+        employee_item = self.payroll_table.item(row, 1)
+
+        if entry_item is None or employee_item is None:
+            return
+
+        entry_id = int(entry_item.text())
+        employee_name = employee_item.text()
+
+        if (
+            QMessageBox.question(
+                self,
+                "Remove employee from month?",
+                (
+                    f"Remove {employee_name} from this "
+                    "salary month?\n\n"
+                    "Their registration record will not "
+                    "be deleted."
+                ),
                 QMessageBox.Yes | QMessageBox.No,
                 QMessageBox.No,
             )
             != QMessageBox.Yes
         ):
             return
+
+        if not self._save_payroll_data(
+            show_message=False
+        ):
+            return
+
+        try:
+            self.context.payroll.exclude_entry(entry_id)
+            self._sync_excel(silent=True)
+        except Exception as exc:
+            QMessageBox.critical(
+                self,
+                "Employee could not be removed",
+                str(exc),
+            )
+            return
+
+        self._load_payroll(
+            self.payroll_month.currentIndex()
+        )
+        self._refresh_dashboard()
+
+        QMessageBox.information(
+            self,
+            "Employee removed",
+            (
+                f"{employee_name} was removed from this "
+                "salary month only. Their registration "
+                "remains unchanged."
+            ),
+        )
+    def _save_payroll(self):
+        self._save_payroll_data(show_message=True)
+
+    def _save_payroll_data(self, show_message: bool) -> bool:
+        if not self.current_payroll_id:
+            return False
+
+        month = self.context.payroll.get_month(
+            self.current_payroll_id
+        )
+        if month.status == "Completed":
+            QMessageBox.warning(
+                self,
+                "Month locked",
+                "Reopen this month before editing.",
+            )
+            return False
+
+        calculated_columns = {
+            6: "working_day_wages",
+            9: "gross_salary",
+            13: "total_deduction",
+            14: "net_salary",
+        }
+
+        override_needed = False
+        prepared = []
+
+        fields = {
+            2: "working_days",
+            3: "ot_hours",
+            4: "ph_days",
+            5: "wages_per_day",
+            6: "working_day_wages",
+            7: "ot_ph_wages",
+            8: "bonus",
+            9: "gross_salary",
+            10: "epf_deduction",
+            11: "esic_deduction",
+            12: "advance",
+            13: "total_deduction",
+            14: "net_salary",
+            15: "client_billing_rate",
+            17: "performance_rating",
+            18: "performance_notes",
+        }
+
+        try:
+            for row in range(
+                self.payroll_table.rowCount()
+            ):
+                values = {"included": True}
+                overrides = set()
+
+                for column, field in fields.items():
+                    cell = self.payroll_table.item(
+                        row,
+                        column,
+                    )
+                    raw = (
+                        cell.text().strip()
+                        if cell is not None
+                        else ""
+                    )
+
+                    if field == "performance_notes":
+                        values[field] = raw
+                    elif field == "performance_rating":
+                        values[field] = (
+                            int(raw)
+                            if raw
+                            else None
+                        )
+                    else:
+                        values[field] = float(
+                            raw.replace(",", "") or 0
+                        )
+
+                from ..services.payroll_service import (
+                    calculate_entry,
+                )
+
+                automatic = calculate_entry(
+                    {**values}
+                )
+
+                for column, field in (
+                    calculated_columns.items()
+                ):
+                    if (
+                        abs(
+                            values[field]
+                            - automatic[field]
+                        )
+                        > 0.001
+                    ):
+                        overrides.add(field)
+                        override_needed = True
+
+                prepared.append(
+                    (
+                        int(
+                            self.payroll_table.item(
+                                row,
+                                0,
+                            ).text()
+                        ),
+                        values,
+                        overrides,
+                    )
+                )
+
+        except (TypeError, ValueError) as exc:
+            QMessageBox.warning(
+                self,
+                "Invalid salary value",
+                f"Use numbers in salary fields. {exc}",
+            )
+            return False
+
+        if (
+            override_needed
+            and QMessageBox.question(
+                self,
+                "Confirm salary override",
+                (
+                    "One or more calculated values were "
+                    "changed manually. Save and record these "
+                    "overrides in the activity log?"
+                ),
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            != QMessageBox.Yes
+        ):
+            return False
+
         try:
             for entry_id, values, overrides in prepared:
-                self.context.payroll.save_entry(entry_id, values, overrides)
+                self.context.payroll.save_entry(
+                    entry_id,
+                    values,
+                    overrides,
+                )
+
             self.context.payroll.update_month_metadata(
                 self.current_payroll_id,
                 self.client_rating.value() or None,
@@ -1107,17 +1433,31 @@ class MainWindow(QMainWindow):
                 self.operational_cost.value(),
             )
             self.context.excel.sync()
-        except Exception as exc:
-            QMessageBox.critical(self, "Salary save failed", str(exc))
-            return
-        self._load_payroll(self.payroll_month.currentIndex())
-        self._refresh_dashboard()
-        QMessageBox.information(
-            self,
-            "Salary saved",
-            "The encrypted database and organisation Excel workbook are updated.",
-        )
 
+        except Exception as exc:
+            QMessageBox.critical(
+                self,
+                "Salary save failed",
+                str(exc),
+            )
+            return False
+
+        self._load_payroll(
+            self.payroll_month.currentIndex()
+        )
+        self._refresh_dashboard()
+
+        if show_message:
+            QMessageBox.information(
+                self,
+                "Salary saved",
+                (
+                    "The encrypted database and organisation "
+                    "Excel workbook are updated."
+                ),
+            )
+
+        return True
     def _toggle_payroll_lock(self):
         if not self.current_payroll_id:
             return
@@ -1172,6 +1512,7 @@ class MainWindow(QMainWindow):
                 (
                     rank,
                     row["name"],
+                    row["registration_number"],
                     row["designation"],
                     row["score"],
                     row["performance"],
@@ -1183,7 +1524,6 @@ class MainWindow(QMainWindow):
                 )
             ):
                 self.redeploy_table.setItem(r, c, item(value))
-        self.redeploy_table.resizeColumnsToContents()
 
     def _redeployment_weights(self):
         with self.context.db.session() as session:
@@ -1321,7 +1661,7 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(dialog)
         table = QTableWidget(0, 4)
         table.setHorizontalHeaderLabels(["When", "Action", "Record", "Description"])
-        table.horizontalHeader().setStretchLastSection(True)
+        configure_resizable_columns(table)
         for log in logs:
             r = table.rowCount()
             table.insertRow(r)

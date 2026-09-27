@@ -30,7 +30,8 @@ from PySide6.QtWidgets import (
 )
 
 from ..constants import GENDERS, LABOUR_CATEGORIES, MARITAL_STATUSES
-from ..services.employee_service import calculate_age
+from ..services.employee_service import DuplicateEmployeeError, calculate_age
+from .table_utils import configure_resizable_columns
 
 
 def to_date(widget: QDateEdit):
@@ -136,7 +137,7 @@ class RowsEditor(QGroupBox):
         layout = QVBoxLayout(self)
         self.table = QTableWidget(0, len(headers))
         self.table.setHorizontalHeaderLabels(headers)
-        self.table.horizontalHeader().setStretchLastSection(True)
+        configure_resizable_columns(self.table)
         self.table.setMinimumHeight(150)
         layout.addWidget(self.table)
         row = QHBoxLayout()
@@ -578,8 +579,19 @@ class EmployeeWizard(QWizard):
                 self.values(), self.employee.id if self.employee else None
             )
             self.context.excel.sync()
+        except DuplicateEmployeeError as exc:
+            QMessageBox.warning(
+                self,
+                "Duplicate identifier",
+                str(exc),
+            )
+            return
         except Exception as exc:
-            QMessageBox.critical(self, "Unable to save registration", str(exc))
+            QMessageBox.critical(
+                self,
+                "Unable to save registration",
+                str(exc),
+            )
             return
         if self.photo_source and Path(self.photo_source).name == ".photo-crop.jpg":
             Path(self.photo_source).unlink(missing_ok=True)

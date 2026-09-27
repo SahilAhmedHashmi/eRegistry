@@ -206,6 +206,7 @@ class AnalyticsService:
                 {
                     "employee_id": employee.id,
                     "name": employee.name,
+                    "registration_number": employee.registration_number or "",
                     "designation": employee.designation,
                     "score": round(score, 1),
                     "performance": round(performance, 1),

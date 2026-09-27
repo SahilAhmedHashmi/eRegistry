@@ -130,6 +130,185 @@ class PayrollService:
             session.commit()
             return entry
 
+    def available_employees(
+        self,
+        payroll_id: int,
+    ) -> list[Employee]:
+        """Return employees not included in this salary month."""
+
+        with self.db.session() as session:
+            month = session.get(
+                PayrollMonth,
+                payroll_id,
+            )
+            if not month:
+                raise ValueError("Payroll month not found.")
+
+            included_employee_ids = set(
+                session.scalars(
+                    select(PayrollEntry.employee_id).where(
+                        (
+                            PayrollEntry.payroll_month_id
+                            == payroll_id
+                        ),
+                        PayrollEntry.included.is_(True),
+                    )
+                )
+            )
+
+            query = select(Employee).order_by(
+                Employee.name
+            )
+            if included_employee_ids:
+                query = query.where(
+                    ~Employee.id.in_(
+                        included_employee_ids
+                    )
+                )
+
+            return list(session.scalars(query))
+
+    def include_employee(
+        self,
+        payroll_id: int,
+        employee_id: int,
+    ) -> PayrollEntry:
+        """Include an employee without changing registration data."""
+
+        with self.db.session() as session:
+            month = session.get(
+                PayrollMonth,
+                payroll_id,
+            )
+            if not month:
+                raise ValueError("Payroll month not found.")
+            if month.status == "Completed":
+                raise ValueError(
+                    "This salary month is locked. "
+                    "Reopen it before editing."
+                )
+
+            employee = session.get(
+                Employee,
+                employee_id,
+            )
+            if not employee:
+                raise ValueError("Employee not found.")
+
+            entry = session.scalars(
+                select(PayrollEntry).where(
+                    (
+                        PayrollEntry.payroll_month_id
+                        == payroll_id
+                    ),
+                    (
+                        PayrollEntry.employee_id
+                        == employee_id
+                    ),
+                )
+            ).first()
+
+            if entry:
+                entry.included = True
+            else:
+                rates = {
+                    rate.designation.casefold(): rate
+                    for rate in session.scalars(
+                        select(RateCard)
+                    )
+                }
+                card = rates.get(
+                    (
+                        employee.designation or ""
+                    ).casefold()
+                )
+
+                entry = PayrollEntry(
+                    payroll_month_id=payroll_id,
+                    employee_id=employee.id,
+                    included=True,
+                    wages_per_day=(
+                        employee.daily_wage_override
+                        if (
+                            employee.daily_wage_override
+                            is not None
+                        )
+                        else (
+                            card.daily_wage
+                            if card
+                            else 0
+                        )
+                    ),
+                    client_billing_rate=(
+                        card.client_billing_rate
+                        if card
+                        else 0
+                    ),
+                )
+                session.add(entry)
+                session.flush()
+
+            session.add(
+                AuditLog(
+                    action="payroll.employee_add",
+                    entity_type="payroll_entry",
+                    entity_id=str(entry.id),
+                    description=(
+                        f"Added {employee.name} to payroll "
+                        f"{month.year}-{month.month:02d}"
+                    ),
+                )
+            )
+            session.commit()
+            return entry
+
+    def exclude_entry(
+        self,
+        entry_id: int,
+    ) -> None:
+        """Exclude a row without deleting the employee."""
+
+        with self.db.session() as session:
+            entry = session.get(
+                PayrollEntry,
+                entry_id,
+            )
+            if not entry:
+                raise ValueError(
+                    "Payroll entry not found."
+                )
+
+            month = session.get(
+                PayrollMonth,
+                entry.payroll_month_id,
+            )
+            if not month:
+                raise ValueError("Payroll month not found.")
+            if month.status == "Completed":
+                raise ValueError(
+                    "This salary month is locked. "
+                    "Reopen it before editing."
+                )
+
+            employee = session.get(
+                Employee,
+                entry.employee_id,
+            )
+            entry.included = False
+
+            session.add(
+                AuditLog(
+                    action="payroll.employee_remove",
+                    entity_type="payroll_entry",
+                    entity_id=str(entry.id),
+                    description=(
+                        f"Removed {employee.name} from payroll "
+                        f"{month.year}-{month.month:02d}; "
+                        "registration retained"
+                    ),
+                )
+            )
+            session.commit()
     def update_month_metadata(
         self,
         payroll_id: int,

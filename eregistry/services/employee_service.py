@@ -26,7 +26,20 @@ def clean_text(value: Any) -> str:
 
 
 def clean_identifier(value: Any) -> str | None:
-    value = re.sub(r"\s+", "", str(value or "").strip()).upper()
+    value = re.sub(
+        r"\s+",
+        "",
+        str(value or "").strip(),
+    ).upper()
+    return value or None
+
+
+def clean_numeric_identifier(value: Any) -> str | None:
+    value = re.sub(
+        r"[\s-]+",
+        "",
+        str(value or "").strip(),
+    ).upper()
     return value or None
 
 
@@ -40,8 +53,31 @@ def calculate_age(dob: date | None, appointment: date | None) -> tuple[int | Non
 
 
 class DuplicateEmployeeError(ValueError):
-    def __init__(self, field: str, employee: Employee):
-        super().__init__(f"{field} already belongs to {employee.name}.")
+    FIELD_LABELS = {
+        "registration_number": "Registration number",
+        "aadhaar_number": "Aadhaar number",
+        "uan_number": "UAN number",
+        "esic_number": "ESIC number",
+    }
+
+    def __init__(
+        self,
+        field: str,
+        employee: Employee,
+    ):
+        label = self.FIELD_LABELS.get(
+            field,
+            field.replace("_", " ").title(),
+        )
+        registration = (
+            employee.registration_number
+            or "Not set"
+        )
+        super().__init__(
+            f"{label} already belongs to "
+            f"{employee.name} "
+            f"(Registration No. {registration})."
+        )
         self.field = field
         self.employee = employee
 
@@ -91,7 +127,7 @@ class EmployeeService:
             stmt = stmt.where(Employee.id != exclude_id)
         existing = session.scalars(stmt).first()
         if existing:
-            raise DuplicateEmployeeError(field.replace("_", " ").title(), existing)
+            raise DuplicateEmployeeError(field, existing)
 
     def save(self, values: dict[str, Any], employee_id: int | None = None) -> Employee:
         values = dict(values)
@@ -99,8 +135,17 @@ class EmployeeService:
         if not name:
             raise ValueError("Employee name is required.")
         values["name"] = name
-        for field in ("registration_number", "aadhaar_number", "uan_number", "esic_number"):
-            values[field] = clean_identifier(values.get(field))
+        values["registration_number"] = clean_identifier(
+            values.get("registration_number")
+        )
+        for field in (
+            "aadhaar_number",
+            "uan_number",
+            "esic_number",
+        ):
+            values[field] = clean_numeric_identifier(
+                values.get(field)
+            )
         if not values.get("age_manual_override"):
             values["age_years"], values["age_months"] = calculate_age(
                 values.get("date_of_birth"), values.get("appointment_date")
@@ -108,7 +153,12 @@ class EmployeeService:
         repeating = {name: values.pop(name, []) for name in REPEATING_MODELS}
         source_photo = values.pop("photo_source", "")
         with self.db.session() as session:
-            for field in ("registration_number", "aadhaar_number", "uan_number"):
+            for field in (
+                "registration_number",
+                "aadhaar_number",
+                "uan_number",
+                "esic_number",
+            ):
                 self._check_duplicate(session, field, values.get(field), employee_id)
             employee = session.get(Employee, employee_id) if employee_id else Employee()
             if employee is None:
