@@ -9,7 +9,7 @@ from datetime import date, datetime
 from pathlib import Path
 
 from PySide6.QtCore import QDate, QSettings, Qt, QUrl, Signal
-from PySide6.QtGui import QDesktopServices
+from PySide6.QtGui import QBrush, QColor, QDesktopServices
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
@@ -44,6 +44,7 @@ from ..database import DatabaseManager, organisation_db_key
 from ..models import AppSetting, AuditLog, RateCard
 from ..services.analytics_service import AnalyticsService
 from ..services.backup_service import BackupService
+from ..services.data_quality_service import DataQualityService
 from ..services.employee_service import EmployeeService
 from ..services.excel_service import ExcelSyncError
 from ..services.import_service import ExcelImportService, TARGET_FIELDS
@@ -407,6 +408,8 @@ class MainWindow(QMainWindow):
         self.context = context
         self.settings = QSettings(str(context.root / "settings.ini"), QSettings.IniFormat)
         self.current_payroll_id = None
+        self.data_quality_issues = []
+        self.data_quality_visible_issues = []
         self.setWindowTitle("eRegistry — Offline Labour Management")
         self.resize(1440, 880)
         root = QWidget()
@@ -441,6 +444,7 @@ class MainWindow(QMainWindow):
         self._build_employees()
         self._build_payroll()
         self._build_analytics()
+        self._build_data_quality()
         self._build_tools()
         self._reload_organisations()
 
@@ -684,6 +688,273 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.redeploy_table)
         self.tabs.addTab(page, "Analytics & Redeployment")
 
+    def _build_data_quality(self):
+        page = QWidget()
+        layout = QVBoxLayout(page)
+
+        controls = QHBoxLayout()
+        run = QPushButton("Run checks")
+        run.clicked.connect(self._run_data_quality_checks)
+        self.data_quality_severity = QComboBox()
+        self.data_quality_severity.addItems(["All severities", "Error", "Warning", "Info"])
+        self.data_quality_severity.currentTextChanged.connect(
+            self._refresh_data_quality_table
+        )
+        self.data_quality_category = QComboBox()
+        self.data_quality_category.addItem("All categories")
+        self.data_quality_category.currentTextChanged.connect(
+            self._refresh_data_quality_table
+        )
+        self.data_quality_search = QLineEdit()
+        self.data_quality_search.setPlaceholderText(
+            "Search employee, registration number, field or problemâ€¦"
+        )
+        self.data_quality_search.textChanged.connect(
+            self._refresh_data_quality_table
+        )
+        open_employee = QPushButton("Open employee")
+        open_employee.clicked.connect(self._open_data_quality_employee)
+
+        controls.addWidget(run)
+        controls.addWidget(QLabel("Severity:"))
+        controls.addWidget(self.data_quality_severity)
+        controls.addWidget(QLabel("Category:"))
+        controls.addWidget(self.data_quality_category)
+        controls.addWidget(self.data_quality_search, 1)
+        controls.addWidget(open_employee)
+        layout.addLayout(controls)
+
+        self.data_quality_summary = QLabel(
+            "Run checks to inspect the current organisation. No values are changed automatically."
+        )
+        self.data_quality_summary.setWordWrap(True)
+        layout.addWidget(self.data_quality_summary)
+
+        self.data_quality_table = QTableWidget(0, 8)
+        self.data_quality_table.setHorizontalHeaderLabels(
+            [
+                "Employee ID",
+                "Severity",
+                "Category",
+                "Employee",
+                "Registration No.",
+                "Source",
+                "Field",
+                "Problem",
+            ]
+        )
+        self.data_quality_table.setColumnHidden(0, True)
+        configure_resizable_columns(
+            self.data_quality_table,
+            [0, 100, 180, 220, 150, 160, 170, 520],
+        )
+        self.data_quality_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.data_quality_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.data_quality_table.doubleClicked.connect(
+            self._open_data_quality_employee
+        )
+        layout.addWidget(self.data_quality_table)
+        self.tabs.addTab(page, "Data Quality")
+
+    def _run_data_quality_checks(self, checked=False, silent=False):
+        if not self.context.db:
+            return
+        try:
+            self.data_quality_issues = DataQualityService(
+                self.context.db
+            ).scan()
+        except Exception as exc:
+            if not silent:
+                QMessageBox.critical(
+                    self,
+                    "Data Quality checks failed",
+                    str(exc),
+                )
+            return
+
+        selected_category = self.data_quality_category.currentText()
+        categories = sorted({issue.category for issue in self.data_quality_issues})
+        self.data_quality_category.blockSignals(True)
+        self.data_quality_category.clear()
+        self.data_quality_category.addItem("All categories")
+        self.data_quality_category.addItems(categories)
+        index = self.data_quality_category.findText(selected_category)
+        self.data_quality_category.setCurrentIndex(max(0, index))
+        self.data_quality_category.blockSignals(False)
+
+        counts = Counter(issue.severity for issue in self.data_quality_issues)
+        self.data_quality_summary.setText(
+            f"{len(self.data_quality_issues)} issue(s): "
+            f"{counts.get('Error', 0)} error(s), "
+            f"{counts.get('Warning', 0)} warning(s), "
+            f"{counts.get('Info', 0)} informational. "
+            "Checks are read-only; review a record before changing it."
+        )
+        self._refresh_data_quality_table()
+        self._apply_data_quality_highlights()
+
+    def _refresh_data_quality_table(self, value=None):
+        if not hasattr(self, "data_quality_table"):
+            return
+        severity = self.data_quality_severity.currentText()
+        category = self.data_quality_category.currentText()
+        search = self.data_quality_search.text().strip().casefold()
+
+        visible = []
+        for issue in self.data_quality_issues:
+            if severity != "All severities" and issue.severity != severity:
+                continue
+            if category != "All categories" and issue.category != category:
+                continue
+            haystack = " ".join(
+                (
+                    issue.employee_name,
+                    issue.registration_number,
+                    issue.source,
+                    issue.field,
+                    issue.message,
+                )
+            ).casefold()
+            if search and search not in haystack:
+                continue
+            visible.append(issue)
+
+        self.data_quality_visible_issues = visible
+        self.data_quality_table.setRowCount(0)
+        colours = {
+            "Error": QColor("#fecaca"),
+            "Warning": QColor("#fde68a"),
+            "Info": QColor("#bfdbfe"),
+        }
+        for issue in visible:
+            row = self.data_quality_table.rowCount()
+            self.data_quality_table.insertRow(row)
+            values = (
+                issue.employee_id or "",
+                issue.severity,
+                issue.category,
+                issue.employee_name,
+                issue.registration_number,
+                issue.source,
+                issue.field.replace("_", " ").title(),
+                issue.message,
+            )
+            for column, cell_value in enumerate(values):
+                table_item = item(cell_value)
+                table_item.setBackground(
+                    QBrush(colours.get(issue.severity, QColor("white")))
+                )
+                self.data_quality_table.setItem(row, column, table_item)
+
+    def _open_data_quality_employee(self, index=None):
+        row = self.data_quality_table.currentRow()
+        if row < 0 or row >= len(self.data_quality_visible_issues):
+            QMessageBox.information(
+                self,
+                "Select an issue",
+                "Select an issue linked to an employee first.",
+            )
+            return
+        issue = self.data_quality_visible_issues[row]
+        if not issue.employee_id:
+            QMessageBox.information(
+                self,
+                "No employee record",
+                "This issue is not linked to an available employee record.",
+            )
+            return
+
+        self.tabs.setCurrentWidget(self.employee_table.parentWidget())
+        self.search.clear()
+        self.status_filter.setCurrentText("All")
+        self.refresh_employees()
+        for employee_row in range(self.employee_table.rowCount()):
+            id_item = self.employee_table.item(employee_row, 0)
+            if id_item and int(id_item.text()) == issue.employee_id:
+                self.employee_table.selectRow(employee_row)
+                self.employee_table.scrollToItem(
+                    self.employee_table.item(employee_row, 2)
+                )
+                self._edit_employee()
+                return
+
+    def _apply_data_quality_highlights(self):
+        if not hasattr(self, "employee_table"):
+            return
+
+        for table in (self.employee_table, self.payroll_table):
+            for row in range(table.rowCount()):
+                for column in range(table.columnCount()):
+                    cell = table.item(row, column)
+                    if cell:
+                        cell.setBackground(QBrush())
+
+        colours = {
+            "Error": QColor("#fecaca"),
+            "Warning": QColor("#fde68a"),
+            "Info": QColor("#bfdbfe"),
+        }
+        employee_columns = {
+            "registration_number": 1,
+            "name": 2,
+            "designation": 3,
+            "status": 4,
+            "exit_date": 4,
+            "exit_reason": 4,
+            "contact_number": 5,
+            "alternate_contact_number": 5,
+            "aadhaar_number": 6,
+            "uan_number": 7,
+            "epfo_registered": 7,
+            "esic_number": 8,
+            "esic_registered": 8,
+        }
+        payroll_columns = {
+            "employee_id": 1,
+            "working_days": 2,
+            "ot_hours": 3,
+            "ph_days": 4,
+            "wages_per_day": 5,
+            "working_day_wages": 6,
+            "ot_ph_wages": 7,
+            "bonus": 8,
+            "gross_salary": 9,
+            "epf_deduction": 10,
+            "esic_deduction": 11,
+            "advance": 12,
+            "total_deduction": 13,
+            "net_salary": 14,
+            "client_billing_rate": 15,
+            "billed_revenue": 16,
+            "performance_rating": 17,
+            "performance_notes": 18,
+        }
+
+        employee_rows = {}
+        for row in range(self.employee_table.rowCount()):
+            id_item = self.employee_table.item(row, 0)
+            if id_item:
+                employee_rows[int(id_item.text())] = row
+        payroll_rows = {}
+        for row in range(self.payroll_table.rowCount()):
+            id_item = self.payroll_table.item(row, 0)
+            if id_item:
+                payroll_rows[int(id_item.text())] = row
+
+        for issue in self.data_quality_issues:
+            colour = colours.get(issue.severity)
+            if issue.entity_type == "employee" and issue.employee_id in employee_rows:
+                row = employee_rows[issue.employee_id]
+                column = employee_columns.get(issue.field, 2)
+                cell = self.employee_table.item(row, column)
+                if cell:
+                    cell.setBackground(QBrush(colour))
+            elif issue.entity_type == "payroll_entry" and issue.entity_id in payroll_rows:
+                row = payroll_rows[issue.entity_id]
+                column = payroll_columns.get(issue.field, 1)
+                cell = self.payroll_table.item(row, column)
+                if cell:
+                    cell.setBackground(QBrush(colour))
     def _build_tools(self):
         page = QWidget()
         layout = QVBoxLayout(page)
@@ -749,6 +1020,7 @@ class MainWindow(QMainWindow):
         self.refresh_employees()
         self._refresh_dashboard()
         self._refresh_months()
+        self._run_data_quality_checks(silent=True)
 
     def refresh_employees(self):
         if not self.context.employees:
@@ -772,6 +1044,8 @@ class MainWindow(QMainWindow):
                 )
             ):
                 self.employee_table.setItem(r, c, item(value))
+        if self.data_quality_issues:
+            self._apply_data_quality_highlights()
 
     def _selected_employee(self):
         row = self.employee_table.currentRow()
@@ -1113,6 +1387,9 @@ class MainWindow(QMainWindow):
         self.operational_cost.setValue(
             month.operational_costs
         )
+
+        if self.data_quality_issues:
+            self._apply_data_quality_highlights()
 
     def _add_employee_to_payroll(self):
         if not self.current_payroll_id:
