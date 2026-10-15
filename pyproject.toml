@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "eregistry"
-version = "1.0.0"
+version = "1.1.1"
 description = "Offline labour registration, payroll and analytics for Windows"
 requires-python = ">=3.11,<3.14"
 dependencies = [

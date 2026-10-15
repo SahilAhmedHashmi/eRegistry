@@ -1,5 +1,5 @@
 #define MyAppName "eRegistry"
-#define MyAppVersion "1.1.0"
+#define MyAppVersion "1.1.1"
 #define MyAppPublisher "eRegistry"
 #define MyAppExeName "eRegistry.exe"
 

@@ -45,7 +45,7 @@ Tests cover password recovery, SQLCipher file encryption, duplicate protection, 
 1. Install Python 3.12 x64.
 2. For the installer, install Inno Setup 6 and ensure `iscc.exe` is in `PATH`.
 3. Run `scripts\build_portable.bat` for `dist\eRegistry\`.
-4. Run `scripts\build_installer.bat` for `dist\installer\eRegistry-Setup-1.0.0.exe`.
+4. Run `scripts\build_installer.bat` for `dist\installer\eRegistry-Setup-1.1.1.exe`.
 
 The portable version is the entire `dist\eRegistry` folder, not just its EXE. Zip that folder for distribution.
 

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 APP_NAME = "eRegistry"
-APP_VERSION = "1.0.0"
+APP_VERSION = "1.1.1"
 DEFAULT_KPI_WEIGHTS = {
     "performance": 0.40,
     "attendance": 0.30,
