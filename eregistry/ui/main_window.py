@@ -51,6 +51,7 @@ from ..services.import_service import ExcelImportService, TARGET_FIELDS
 from ..services.report_service import AnalyticsReportService
 from .dialogs import OrganisationDialog
 from .employee_wizard import EmployeeWizard
+from .reconciliation_widget import ReconciliationWidget
 from .table_utils import configure_resizable_columns
 
 
@@ -443,6 +444,8 @@ class MainWindow(QMainWindow):
         self._build_dashboard()
         self._build_employees()
         self._build_payroll()
+        self.reconciliation_widget = ReconciliationWidget(self.context, self)
+        self.tabs.addTab(self.reconciliation_widget, "Salary Reconciliation")
         self._build_analytics()
         self._build_data_quality()
         self._build_tools()
@@ -1020,6 +1023,7 @@ class MainWindow(QMainWindow):
         self.refresh_employees()
         self._refresh_dashboard()
         self._refresh_months()
+        self.reconciliation_widget.refresh_months()
         self._run_data_quality_checks(silent=True)
 
     def refresh_employees(self):
